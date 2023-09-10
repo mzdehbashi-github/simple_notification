@@ -9,24 +9,12 @@ services:
     env_file:
       - .env
 
-  # redis:
-  #   image: redis:latest
-  #   ports:
-  #     - "6379:6379"
-
-  # api:
-  #   image: simple_notification:latest
-  #   ports:
-  #     - 8000:8000
-  #   command: sh -c "sleep 10 && poetry run alembic upgrade head && poetry run python3 simple_notification/api.py"
-  #   depends_on:
-  #     - postgres
-  #     - redis
-
-  # publish_notifications:
-  #   image: simple_notification:latest
-  #   command: sh -c "sleep 15 && poetry run python3 simple_notification/publish_notifications.py"
-  #   depends_on:
-  #     - postgres
-  #     - redis
-  #     - api
+  webapp:
+     image: simplenotification:1
+     ports:
+       - 8000:8000
+     command: sh -c "sleep 10 && poetry run alembic upgrade head && poetry run python simple_notification/main.py"
+     depends_on:
+       - postgres
+     env_file:
+       - .env

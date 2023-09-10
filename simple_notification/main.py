@@ -2,13 +2,13 @@ import asyncio
 import os
 
 import uvicorn
+import asyncpg
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from simple_notification.db import get_session
+from simple_notification import db
 from simple_notification.models import User, UserCreate, Notification, NotificationCreate
-from simple_notification.redis_ import redis_connection
 
 # The FastAPI application object
 app = FastAPI()
@@ -16,9 +16,12 @@ app = FastAPI()
 # Keeps track of WebSocket connections, which will receive real-time notifications
 connected_clients = set()
 
+# Conducts Postgres notifications
+pg_notifies = asyncio.Queue()
+
 
 @app.post('/users', response_model=User)
-async def add_user(user_create: UserCreate, session: AsyncSession = Depends(get_session)):
+async def add_user(user_create: UserCreate, session: AsyncSession = Depends(db.get_session)):
     user = User(email=user_create.email)
     session.add(user)
     await session.commit()
@@ -27,14 +30,19 @@ async def add_user(user_create: UserCreate, session: AsyncSession = Depends(get_
 
 
 @app.get('/notifications', response_model=list[Notification])
-async def get_notifications(session: AsyncSession = Depends(get_session)):
+async def get_notifications(session: AsyncSession = Depends(db.get_session)):
     result = await session.execute(select(Notification))
     notifications = result.scalars().all()
     return notifications
 
 
+@app.get('/count-ws-connections', response_model=int)
+async def count_ws_connections():
+    return len(connected_clients)
+
+
 @app.post('/notifications', response_model=Notification)
-async def add_notification(notification_create: NotificationCreate, session: AsyncSession = Depends(get_session)):
+async def add_notification(notification_create: NotificationCreate, session: AsyncSession = Depends(db.get_session)):
     notification = Notification(text=notification_create.text, user_id=notification_create.user_id)
     session.add(notification)
     await session.commit()
@@ -42,71 +50,27 @@ async def add_notification(notification_create: NotificationCreate, session: Asy
     return notification
 
 
-# async def notification_consumer():
-#     async with redis_connection.pubsub() as pubsub:
-#         await pubsub.subscribe('notifications')
-#         while True:
-#             message = await pubsub.get_message(ignore_subscribe_messages=True)
-#             if message:
-#                 notification_text = message["data"].decode()
-#                 for client in connected_clients:
-#                     await client.send_text(notification_text)
-
-
-import aiopg
-
-async def notification_consumer_1():
-    # Establish a connection pool to your PostgreSQL database
-    dsn = 'dbname=simple_notification user=postgres password=postgres host=localhost'
-    pool = await aiopg.create_pool(dsn)
-
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            # Set the name of the PostgreSQL channel to listen to
-            channel_name = 'new_notification_channel'
-
-            # Enable listening for notifications on the specified channel
-            await cur.execute(f"LISTEN {channel_name}")
-
-            while True:
-                # Wait for notifications
-                print('BEFORE call to `await conn.notifies.get`')
-                msg = await conn.notifies.get()
-                print('AFTER call to `await conn.notifies.get`')
-                notification_text = msg.payload
-
-                # Handle the notification (e.g., send it to connected clients)
-                for client in connected_clients:
-                    await client.send_text(notification_text)
-
-
-import asyncpg
-
-
-
-class Connection:
-    def __init__(self, dsn):
-        self.dsn = dsn
-        self.connection = None
-        self._notifies_queue = asyncio.Queue()
-
-    async def connect(self):
-        self.connection = await asyncpg.connect(self.dsn)
-        await self.connection.add_listener("new_notification_channel", self._handle_notification_1)
-        while True:
-            await asyncio.sleep(1)
-
-    async def execute(self, sql):
-        return await self.connection.execute(sql)
-
-    async def _handle_notification_1(self, pid, channel, payload, *args):
-        print("_handle_notification!!!! \n ", f'{pid=}, {channel=}, {payload=}, {args=}')
+async def handle_pg_notification(pid, channel, payload, notification: str):
+    await pg_notifies.put(notification)
 
 
 async def notification_consumer_asyncpg():
-    dsn = 'postgresql://postgres:postgres@localhost/simple_notification'
-    conn = Connection(dsn)
-    await conn.connect()
+    connection = await asyncpg.connect(
+        host=db.host,
+        port=db.port,
+        user=db.user,
+        password=db.password,
+        database=db.database,
+    )
+
+    await connection.add_listener("new_notification_channel", handle_pg_notification)
+
+    while True:
+        payload = await pg_notifies.get()
+
+        # Handle the notification (e.g., send it to connected clients)
+        for client in connected_clients:
+            await client.send_text(payload)
 
 
 @app.websocket("/ws/notifications")
@@ -124,8 +88,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 async def main():
     # Start the notification consumer in the background
-    # asyncio.create_task(notification_consumer_asyncpg())
-    # asyncio.create_task(notification_consumer_1())
+    asyncio.create_task(notification_consumer_asyncpg())
 
     # Run the FastAPI application using uvicorn
     uvicorn_config = uvicorn.Config(

@@ -16,6 +16,7 @@ aio-pika = "^9.2.2"
 websockets = "^11.0.3"
 redis = "^5.0.0"
 aiopg = "^1.4.0"
+greenlet = "^2.0.2"
 
 
 [build-system]
