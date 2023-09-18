@@ -14,7 +14,7 @@ import sqlmodel
 
 # revision identifiers, used by Alembic.
 revision: str = '8a328b5576d0'
-down_revision: Union[str, None] = '3261387bf67c'
+down_revision: Union[str, None] = '9f9be199ae5c'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -24,8 +24,15 @@ def upgrade():
     notify_function = """
     CREATE OR REPLACE FUNCTION notify_new_notification()
     RETURNS TRIGGER AS $$
+    DECLARE
+        notification_json JSON;
     BEGIN
-        PERFORM pg_notify('new_notification_channel', 'New notification: ' || NEW.text);
+        notification_json = json_build_object(
+            'id', NEW.id,
+            'receiver_id', NEW.receiver_id,
+            'text', NEW.text
+        );
+        PERFORM pg_notify('new_notification_channel', notification_json::TEXT);
         RETURN NEW;
     END;
     $$ LANGUAGE plpgsql;

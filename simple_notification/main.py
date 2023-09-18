@@ -1,53 +1,37 @@
 import asyncio
 import os
+import json
 
 import uvicorn
 import asyncpg
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
-from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, Cookie
 
 from simple_notification import db
-from simple_notification.models import User, UserCreate, Notification, NotificationCreate
+from simple_notification.routers import user, auth, notification
+from simple_notification.auth import get_current_user_cookie
+from simple_notification.models.user import User
 
 # The FastAPI application object
 app = FastAPI()
+app.include_router(user.router)
+app.include_router(notification.router)
+app.include_router(
+    auth.router,
+    prefix='/auth',
+    tags=['auth'],
+)
 
 # Keeps track of WebSocket connections, which will receive real-time notifications
-connected_clients = set()
+connected_clients = {}
 
 # Conducts Postgres notifications
 pg_notifies = asyncio.Queue()
 
 
-@app.post('/users', response_model=User)
-async def add_user(user_create: UserCreate, session: AsyncSession = Depends(db.get_session)):
-    user = User(email=user_create.email)
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-@app.get('/notifications', response_model=list[Notification])
-async def get_notifications(session: AsyncSession = Depends(db.get_session)):
-    result = await session.execute(select(Notification))
-    notifications = result.scalars().all()
-    return notifications
-
-
 @app.get('/count-ws-connections', response_model=int)
 async def count_ws_connections():
+    print(connected_clients)
     return len(connected_clients)
-
-
-@app.post('/notifications', response_model=Notification)
-async def add_notification(notification_create: NotificationCreate, session: AsyncSession = Depends(db.get_session)):
-    notification = Notification(text=notification_create.text, user_id=notification_create.user_id)
-    session.add(notification)
-    await session.commit()
-    await session.refresh(notification)
-    return notification
 
 
 async def handle_pg_notification(pid, channel, payload, notification: str):
@@ -67,23 +51,27 @@ async def notification_consumer_asyncpg():
 
     while True:
         payload = await pg_notifies.get()
-
-        # Handle the notification (e.g., send it to connected clients)
-        for client in connected_clients:
+        notification_detail = json.loads(payload)
+        receiver_id = notification_detail['receiver_id']
+        if client := connected_clients.get(receiver_id):
             await client.send_text(payload)
 
 
 @app.websocket("/ws/notifications")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(
+        websocket: WebSocket,
+        access_token: str = Cookie(None),  # Extract the access_token from cookies
+        user: User = Depends(get_current_user_cookie),
+):
     await websocket.accept()
-    connected_clients.add(websocket)
+    connected_clients[user.id] = websocket
 
     try:
         # Keep the WebSocket connection alive
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        connected_clients.remove(websocket)
+        del connected_clients[user.id]
 
 
 async def main():

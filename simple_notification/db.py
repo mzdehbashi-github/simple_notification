@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from sqlmodel import create_engine
 from sqlmodel.engine.create import URL
@@ -34,3 +35,12 @@ async def get_session() -> AsyncSession:
     )
     async with async_session() as session:
         yield session
+
+
+@asynccontextmanager
+async def get_connection():
+    async_session = sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with async_session() as session:
+            yield session
